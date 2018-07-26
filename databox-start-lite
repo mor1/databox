@@ -1,0 +1,48 @@
+#!/bin/bash
+
+PS4='$LINENO: '
+set -xe
+
+export DATABOX_PATH=$(dirname $(realpath "$0"))
+# for cut'n'paste
+#  export DATABOX_PATH=$(pwd -P)
+
+URL_IP=http://whatismyip.akamai.com/
+EXT_IP=$(docker run --rm -t databoxsystems/curl -s $URL_IP)
+HOST_IP=192.168.1.245
+
+ARCH=""
+NODE_IMAGE="node:alpine"
+DATABOX_ARCH=""
+
+DOCKER_REPO="databoxsystems/"   # https://hub.docker.com/r/databoxsystems/
+DATABOX_CORE_IMAGE_VERSION=$(<./Version)
+DATABOX_VERSION=$(<./Version)
+
+function _exec {
+    docker run --net=host -i --rm -v ${DATABOX_PATH}:/cwd -w /cwd \
+           ${DARGS} ${NODE_IMAGE} "$@"
+}
+
+export BCAST_FIFO="/tmp/databox_relay"
+export BCAST_IP=${HOST_IP}
+if [ ! -p "${BCAST_FIFO}" ]; then
+    mkfifo ${BCAST_FIFO}
+fi
+
+# _exec npm install -loglevel silent
+
+docker swarm init --advertise-addr ${EXT_IP}
+
+docker network create -d overlay --attachable databox-system-net
+
+docker-compose -f ./docker-core-network.yaml up -d
+
+_exec node ./src/createResolvConf.js \
+      "$(docker inspect $(docker ps -q --filter="name=databox-network"))"
+
+docker-compose -f ./docker-databox-appstore.yaml up -d # --remove-orphans
+
+docker stack deploy -c docker-compose.yaml databox --prune
+
+docker service logs databox_container-manager -f
